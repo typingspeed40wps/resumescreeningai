@@ -1,56 +1,52 @@
 import os
 import pandas as pd
-from sentence_transformers import SentenceTransformer, util
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 from utils import extract_text_from_pdf, preprocess
 from skills import extract_skills
-
-model = SentenceTransformer('all-MiniLM-L6-v2')
 
 def load_job_description(path):
     with open(path, "r", encoding="utf-8") as f:
         return f.read()
 
-def score_resume(jd_text, resume_text):
-    jd_embedding = model.encode(jd_text, convert_to_tensor=True)
-    resume_embedding = model.encode(resume_text, convert_to_tensor=True)
-
-    semantic_score = util.cos_sim(jd_embedding, resume_embedding).item()
-
-    jd_skills = extract_skills(jd_text)
-    resume_skills = extract_skills(resume_text)
-
-    skill_match = len(set(jd_skills) & set(resume_skills))
-    skill_score = skill_match / (len(jd_skills) + 1)
-
-    final_score = (0.7 * semantic_score) + (0.3 * skill_score)
-
-    return final_score, semantic_score, skill_score, jd_skills, resume_skills
-
 def rank_resumes(jd, folder):
-    results = []
+    resumes = []
+    names = []
+    raw_texts = []
 
     for file in os.listdir(folder):
         if file.endswith(".pdf"):
             path = os.path.join(folder, file)
             text = extract_text_from_pdf(path)
+            if text.strip():
+                resumes.append(preprocess(text))
+                raw_texts.append(text)
+                names.append(file)
 
-            if not text.strip():
-                continue
+    if not resumes:
+        return pd.DataFrame()
 
-            processed = preprocess(text)
+    vectorizer = TfidfVectorizer()
+    vectors = vectorizer.fit_transform([preprocess(jd)] + resumes)
 
-            final, semantic, skill, jd_sk, res_sk = score_resume(jd, processed)
+    scores = cosine_similarity(vectors[0:1], vectors[1:]).flatten()
 
-            results.append({
-                "Resume": file,
-                "Final Score": round(final, 3),
-                "Semantic Score": round(semantic, 3),
-                "Skill Score": round(skill, 3),
-                "Matched Skills": list(set(jd_sk) & set(res_sk))
-            })
+    results = []
+
+    jd_skills = extract_skills(jd)
+
+    for i, score in enumerate(scores):
+        resume_skills = extract_skills(raw_texts[i])
+        matched = list(set(jd_skills) & set(resume_skills))
+
+        results.append({
+            "Resume": names[i],
+            "Score": round(score, 3),
+            "Matched Skills": matched
+        })
 
     df = pd.DataFrame(results)
-    df = df.sort_values(by="Final Score", ascending=False)
+    df = df.sort_values(by="Score", ascending=False)
 
     return df
 
